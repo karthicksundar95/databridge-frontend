@@ -4,12 +4,14 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n contributor,analytics \"npm:dev:client\" \"npm:dev:analytics\"",
+    "dev": "concurrently -k -n client,analytics \"npm:dev:client\" \"npm:dev:analytics\"",
     "dev:client": "vite --config apps/client-portal/vite.config.ts",
     "dev:analytics": "vite --config apps/analytics-portal/vite.config.ts",
     "build": "npm run build:client && npm run build:analytics",
     "build:client": "tsc -b apps/client-portal/tsconfig.json && vite build --config apps/client-portal/vite.config.ts",
     "build:analytics": "tsc -b apps/analytics-portal/tsconfig.json && vite build --config apps/analytics-portal/vite.config.ts",
+    "test:flow": "node scripts/portal-flow.mjs",
+    "record:flow": "node scripts/portal-flow.mjs --record",
     "preview": "vite preview --config apps/client-portal/vite.config.ts"
   },
   "dependencies": {
@@ -25,6 +27,7 @@
     "@vitejs/plugin-react": "^6.1.2",
     "concurrently": "^9.2.1",
     "oxlint": "^1.90.0",
+    "playwright": "^1.57.0",
     "typescript": "~7.0.2",
     "vite": "^8.3.6"
   }
