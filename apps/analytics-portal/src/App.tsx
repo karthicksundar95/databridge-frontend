@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
-  BarChart3, ChevronDown, ChevronLeft, ChevronRight, Download, FileCheck2, Files, FolderKanban,
-  LayoutDashboard, LoaderCircle, LogOut, Menu, Users, UploadCloud, X,
+  BarChart3, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, FileCheck2, Files, FolderKanban,
+  LayoutDashboard, LoaderCircle, LogOut, Menu, MoreHorizontal, Trash2, UserRoundCheck, UserRoundX, Users,
+  UploadCloud, X, KeyRound,
 } from 'lucide-react'
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
-import { analyticsApi, type AnalyticsSubmission, type AnalyticsUser, type SubmissionFile } from './services/analyticsApi'
+import { analyticsApi, type AdminUser, type AnalyticsSubmission, type AnalyticsUser, type SubmissionFile } from './services/analyticsApi'
 import './App.css'
 
 const navigation = [
@@ -48,6 +49,7 @@ function AuthGate() {
   }, [])
   if (checking) return <LoadingPage label="Checking your session" />
   if (!user) return location.pathname === '/' ? <PortalSelection /> : <LoginPage onAuthenticated={setUser} />
+  if (user.mustChangePassword && location.pathname !== '/analytics/password') return <Navigate to="/analytics/password" replace />
   if (location.pathname === '/login' || location.pathname === '/') return <Navigate to="/analytics" replace />
   return <Shell user={user} onSignedOut={() => setUser(null)} />
 }
@@ -135,6 +137,7 @@ function Shell({ user, onSignedOut }: { user: AnalyticsUser; onSignedOut: () => 
       <div className="sidebar-brand"><Logo /><button className="icon-button mobile-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X size={18} /></button></div>
       <nav className="primary-nav" aria-label="Analytics navigation"><p className="nav-heading">Analytics workspace</p>
         {navigation.map(({ label, to, icon: Icon }) => <NavLink key={to} to={to} end={to === '/analytics'} title={collapsed ? label : undefined} onClick={() => setMobileOpen(false)}><Icon size={19} strokeWidth={1.8} /><span>{label}</span></NavLink>)}
+        {user.role === 'administrator' && <><p className="nav-heading">Administration</p><NavLink to="/analytics/admin/users" title={collapsed ? 'User administration' : undefined} onClick={() => setMobileOpen(false)}><Users size={19} strokeWidth={1.8} /><span>User administration</span></NavLink></>}
       </nav>
       <div className="sidebar-footer"><button className="collapse-button" aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={() => setCollapsed((value) => !value)}>{collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}<span>Collapse</span></button></div>
     </aside>
@@ -148,10 +151,154 @@ function Shell({ user, onSignedOut }: { user: AnalyticsUser; onSignedOut: () => 
         <Route path="/analytics/inbox" element={<SubmissionList mode="inbox" />} />
         <Route path="/analytics/assignments" element={<SubmissionList mode="assigned" />} />
         <Route path="/analytics/completed" element={<SubmissionList mode="completed" />} />
+        <Route path="/analytics/password" element={<PasswordChange />} />
+        {user.role === 'administrator' && <Route path="/analytics/admin/users" element={<AdminUsers currentUserId={user.id} />} />}
         <Route path="*" element={<Navigate to="/analytics" replace />} />
       </Routes></main>
     </div>
   </div>
+}
+
+function AdminUsers({ currentUserId }: { currentUserId: string }) {
+  const [refresh, setRefresh] = useState(0)
+  const { data, error, loading } = useRemoteData(() => analyticsApi.adminUsers(), refresh)
+  const [actionError, setActionError] = useState('')
+  const [busyId, setBusyId] = useState('')
+  const [createError, setCreateError] = useState('')
+  const [credentials, setCredentials] = useState<{ email: string; password: string } | null>(null)
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState('all')
+  const [actionMenuId, setActionMenuId] = useState<string | null>(null)
+  const [actionMenuPosition, setActionMenuPosition] = useState({ top: 0, left: 0 })
+  const [copiedCredential, setCopiedCredential] = useState(false)
+  const users = data ?? []
+  const filters = [
+    { id: 'all', label: 'All users' },
+    { id: 'active', label: 'Active' },
+    { id: 'suspended', label: 'Deactivated' },
+    { id: 'deleted', label: 'Deleted' },
+    { id: 'analyst', label: 'Analysts' },
+    { id: 'contributor', label: 'Contributors' },
+    { id: 'administrator', label: 'Administrators' },
+  ]
+  const filteredUsers = users.filter((target) => {
+    const normalizedQuery = query.trim().toLowerCase()
+    const matchesQuery = !normalizedQuery || [target.displayName, target.email, target.organization].some((value) => value?.toLowerCase().includes(normalizedQuery))
+    const matchesFilter = filter === 'all' || target.status === filter || target.role === filter
+    return matchesQuery && matchesFilter
+  })
+
+  async function changeStatus(target: AdminUser, status: 'active' | 'suspended') {
+    setActionError('')
+    setBusyId(target.id)
+    try {
+      await analyticsApi.updateUserStatus(target.id, status)
+      setRefresh((value) => value + 1)
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : 'Unable to update user status')
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  async function deleteUser(target: AdminUser) {
+    const reason = window.prompt(`Explain why ${target.email} is being permanently deleted:`)
+    if (!reason?.trim()) return
+    if (window.prompt(`Type DELETE to confirm deletion of ${target.email}:`) !== 'DELETE') return
+    setActionError('')
+    setBusyId(target.id)
+    try {
+      await analyticsApi.deleteUser(target.id, reason.trim())
+      setRefresh((value) => value + 1)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Unable to delete user')
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  async function resetPassword(target: AdminUser) {
+    if (!window.confirm(`Issue a new temporary password for ${target.email}?`)) return
+    setActionError('')
+    setCredentials(null)
+    setBusyId(target.id)
+    try {
+      const result = await analyticsApi.resetUserPassword(target.id)
+      setCredentials({ email: result.email, password: result.temporaryPassword })
+      setActionMenuId(null)
+      setRefresh((value) => value + 1)
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : 'Unable to reset password')
+    } finally {
+      setBusyId('')
+    }
+
+  }
+
+  async function copyCredential() {
+    if (!credentials) return
+    await navigator.clipboard.writeText(`Email: ${credentials.email}\nTemporary password: ${credentials.password}`)
+    setCopiedCredential(true)
+    window.setTimeout(() => setCopiedCredential(false), 1600)
+  }
+
+  async function createUser(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const formElement = event.currentTarget
+    setCreateError('')
+    setCredentials(null)
+    const form = new FormData(formElement)
+    try {
+      const created = await analyticsApi.createUser({
+        email: String(form.get('email') ?? '').trim(),
+        displayName: String(form.get('displayName') ?? '').trim(),
+        organization: String(form.get('organization') ?? '').trim() || undefined,
+        role: String(form.get('role') ?? 'contributor') as AdminUser['role'],
+      })
+      setCredentials({ email: created.email, password: created.temporaryPassword })
+      formElement.reset()
+      setRefresh((value) => value + 1)
+    } catch (reason) {
+      setCreateError(reason instanceof Error ? reason.message : 'Unable to create user')
+    }
+  }
+
+  return <div className="page-shell">
+    <div className="page-heading"><div><p className="eyebrow">ADMINISTRATION</p><h1>User administration</h1><p>Deactivate accounts or permanently anonymize them so the email can be registered again.</p></div></div>
+    {(error || actionError || createError) && <ErrorBanner message={error || actionError || createError} />}
+    {credentials && <section className="card admin-credentials-card"><div><span className="admin-card-kicker">SECURE HANDOFF</span><h2>Temporary credentials</h2><p>Share these once through a secure channel. The user must change the password after signing in.</p></div><div className="credential-grid"><div><span className="credential-label">Email</span><strong>{credentials.email}</strong></div><div><span className="credential-label">Temporary password</span><code>{credentials.password}</code></div><button className="secondary-button credential-copy-button" type="button" onClick={() => void copyCredential()}>{copiedCredential ? <><Check size={15} />Copied</> : <><Copy size={15} />Copy details</>}</button></div></section>}
+    <section className="card admin-create-card"><div className="admin-card-header"><div><span className="admin-card-kicker">ACCOUNT PROVISIONING</span><h2>Create user</h2><p>Issue a controlled temporary login. The user will choose a private password at first sign-in.</p></div><span className="admin-card-badge">Admin only</span></div><form className="admin-create-form" onSubmit={(event) => void createUser(event)}><label className="field-label">Full name<input name="displayName" placeholder="e.g. Alex Morgan" required /></label><label className="field-label">Work email<input name="email" type="email" placeholder="alex@company.com" required /></label><label className="field-label">Organization<input name="organization" placeholder="Optional" /></label><label className="field-label">Role<select name="role" defaultValue="contributor"><option value="contributor">Contributor</option><option value="analyst">Analyst</option><option value="administrator">Administrator</option></select></label><button className="primary-button purple admin-create-button" type="submit">Create user</button></form></section>
+    <section className="card admin-users-card">
+      <div className="admin-directory-header"><div><span className="admin-card-kicker">DIRECTORY</span><h2>All users <span>{filteredUsers.length}</span></h2></div><label className="admin-search"><span>Search users</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Name, email, organization" /></label></div>
+      <div className="admin-filter-tabs" role="tablist">{filters.map((item) => <button key={item.id} className={filter === item.id ? 'is-active' : ''} type="button" onClick={() => setFilter(item.id)}>{item.label}<span>{users.filter((target) => item.id === 'all' || target.status === item.id || target.role === item.id).length}</span></button>)}</div>
+      {loading ? <LoadingPage label="Loading users" /> : <div className="data-table-wrap"><table className="data-table"><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>
+        {filteredUsers.map((target) => <tr key={target.id}><td><strong>{target.displayName || target.email}</strong><small>{target.email}{target.organization ? ` · ${target.organization}` : ''}</small></td><td><select value={target.role} disabled={target.id === currentUserId || target.status === 'deleted' || busyId === target.id} onChange={(event) => void analyticsApi.updateUserRole(target.id, event.target.value as AdminUser['role']).then(() => setRefresh((value) => value + 1)).catch((reason) => setActionError(reason instanceof Error ? reason.message : 'Unable to update role'))}><option value="contributor">Contributor</option><option value="analyst">Analyst</option><option value="administrator">Administrator</option></select></td><td><span className={`admin-status ${target.status}`}>{target.status === 'suspended' ? 'Deactivated' : target.status}</span></td><td>{formatDate(target.createdAt)}</td><td><div className="admin-row-actions">{target.id !== currentUserId && target.status !== 'deleted' ? <><button className="icon-button admin-more-button" type="button" aria-label={`Manage ${target.email}`} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const menuHeight = 178; const menuWidth = 224; setActionMenuPosition({ top: rect.bottom + menuHeight > window.innerHeight ? rect.top - menuHeight - 8 : rect.bottom + 8, left: Math.max(12, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 12)) }); setActionMenuId(actionMenuId === target.id ? null : target.id) }}><MoreHorizontal size={18} /></button>{actionMenuId === target.id && <div className="admin-action-menu" style={{ top: actionMenuPosition.top, left: actionMenuPosition.left }}><div className="admin-action-menu-title">Account actions</div><div className="admin-action-menu-group"><button type="button" onClick={() => void resetPassword(target)}><KeyRound size={15} />Reset password</button>{target.status === 'suspended' ? <button type="button" onClick={() => void changeStatus(target, 'active')}><UserRoundCheck size={15} />Reactivate account</button> : <button type="button" onClick={() => void changeStatus(target, 'suspended')}><UserRoundX size={15} />Deactivate account</button>}</div><div className="admin-action-menu-group admin-action-menu-danger"><button type="button" onClick={() => void deleteUser(target)}><Trash2 size={15} />Delete account</button></div></div>}</> : <span className="admin-current-user">Current account</span>}</div></td></tr>)}
+        {!filteredUsers.length && <tr><td className="admin-empty-row" colSpan={5}>No users match this search or filter.</td></tr>}
+      </tbody></table></div>}
+    </section>
+  </div>
+}
+
+function PasswordChange() {
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const navigate = useNavigate()
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    const form = new FormData(event.currentTarget)
+    try {
+      await analyticsApi.changePassword(String(form.get('currentPassword') ?? ''), String(form.get('newPassword') ?? ''))
+      navigate('/analytics', { replace: true })
+      window.location.reload()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to change password')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return <main className="auth-page"><div className="auth-brand"><Logo /><p>Set a private password before continuing to DataBridge.</p></div><form className="card upload-card auth-card" onSubmit={(event) => void submit(event)}><div className="upload-section-heading"><div className="upload-icon"><Users size={20} /></div><div><h1>Choose a new password</h1><p>Your administrator issued a temporary password for this account.</p></div></div><label className="field-label">Temporary password<input name="currentPassword" type="password" required /></label><label className="field-label">New password<input name="newPassword" type="password" minLength={12} required /><span>Use at least 12 characters.</span></label>{error && <ErrorBanner message={error} />}<button className="primary-button upload-submit purple" type="submit" disabled={busy}>{busy && <LoaderCircle className="spinning" size={17} />}Save new password</button></form></main>
 }
 
 function useRemoteData<T>(load: () => Promise<T>, reloadKey = 0) {

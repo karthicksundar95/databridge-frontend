@@ -7,6 +7,7 @@ export interface AnalyticsUser {
   role: 'analyst' | 'administrator' | 'contributor'
   displayName?: string
   organization?: string | null
+  mustChangePassword?: boolean
 }
 
 export interface AnalyticsSubmission {
@@ -34,6 +35,17 @@ export interface SubmissionFile {
   contentType: string
   fileSize: number
   createdAt: string
+}
+
+export interface AdminUser {
+  id: string
+  email: string
+  role: 'contributor' | 'analyst' | 'administrator'
+  status: 'active' | 'invited' | 'suspended' | 'deleted'
+  displayName?: string | null
+  organization?: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 async function request<T>(baseUrl: string, path: string, options: RequestInit = {}): Promise<T> {
@@ -114,6 +126,44 @@ export const analyticsApi = {
     return request(apiBaseUrl, `/submissions/${submissionId}/assignment`, {
       method: 'POST',
       body: JSON.stringify({ analystId }),
+    })
+  },
+  adminUsers() {
+    return request<AdminUser[]>(authBaseUrl, '/admin/users')
+  },
+  updateUserStatus(userId: string, status: 'active' | 'suspended') {
+    return request<{ id: string; status: string }>(authBaseUrl, `/admin/users/${userId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    })
+  },
+  deleteUser(userId: string, reason: string) {
+    return request<{ id: string; status: string }>(authBaseUrl, `/admin/users/${userId}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ confirmation: 'DELETE', reason }),
+    })
+  },
+  createUser(data: { email: string; displayName: string; role: AdminUser['role']; organization?: string }) {
+    return request<AdminUser & { temporaryPassword: string; mustChangePassword: boolean }>(authBaseUrl, '/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  },
+  updateUserRole(userId: string, role: AdminUser['role']) {
+    return request<{ id: string; role: string }>(authBaseUrl, `/admin/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role }),
+    })
+  },
+  resetUserPassword(userId: string) {
+    return request<{ id: string; email: string; temporaryPassword: string; mustChangePassword: boolean }>(authBaseUrl, `/admin/users/${userId}/reset-password`, {
+      method: 'POST',
+    })
+  },
+  changePassword(currentPassword: string, newPassword: string) {
+    return request<{ status: string }>(authBaseUrl, '/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
     })
   },
 }

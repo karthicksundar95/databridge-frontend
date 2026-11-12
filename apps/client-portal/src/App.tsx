@@ -57,8 +57,29 @@ function AuthGate() {
     const signup = location.pathname === '/signup'
     return <AuthPage initialSignup={signup} onAuthenticated={setUser} />
   }
+  if (user.mustChangePassword) return <PasswordChangePage onComplete={() => setUser({ ...user, mustChangePassword: false })} />
   if (location.pathname === '/login' || location.pathname === '/signup') return <Navigate to="/" replace />
   return <Shell user={user} onSignedOut={() => setUser(null)} />
+}
+
+function PasswordChangePage({ onComplete }: { onComplete: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    const form = new FormData(event.currentTarget)
+    try {
+      await authApi.changePassword(String(form.get('currentPassword') ?? ''), String(form.get('newPassword') ?? ''))
+      onComplete()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to change password')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return <main className="auth-page"><div className="auth-brand"><Logo /><p>Set a private password before continuing to DataBridge.</p></div><form className="card upload-card auth-card" onSubmit={(event) => void submit(event)}><div className="upload-section-heading"><div className="upload-icon"><UserRound size={20} /></div><div><h1>Choose a new password</h1><p>Your administrator issued a temporary password for this account.</p></div></div><label className="field-label">Temporary password<input name="currentPassword" type="password" required /></label><label className="field-label">New password<input name="newPassword" type="password" minLength={12} required /><span>Use at least 12 characters.</span></label>{error && <p className="form-message error-message" role="alert">{error}</p>}<button className="primary-button upload-submit" type="submit" disabled={busy}>{busy && <LoaderCircle className="spinning" size={17} />}Save new password</button></form></main>
 }
 
 function PortalSelection() {
@@ -94,6 +115,9 @@ function AuthPage({ initialSignup, onAuthenticated }: { initialSignup: boolean; 
   const [signup, setSignup] = useState(initialSignup)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [signupChallenge, setSignupChallenge] = useState<{ id: string; email: string } | null>(null)
+  const [signupPassword, setSignupPassword] = useState('')
+  const [verificationCode, setVerificationCode] = useState('')
   const navigate = useNavigate()
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -105,13 +129,16 @@ function AuthPage({ initialSignup, onAuthenticated }: { initialSignup: boolean; 
     const password = String(data.get('password') ?? '')
     try {
       if (signup) {
-        await authApi.register({
+        setSignupPassword(password)
+        const challenge = await authApi.register({
           email,
           password,
           displayName: String(data.get('displayName') ?? '').trim(),
           organization: String(data.get('organization') ?? '').trim() || undefined,
           countryCode: String(data.get('countryCode') ?? '').trim().toUpperCase() || undefined,
         })
+        setSignupChallenge({ id: challenge.challengeId, email: challenge.email })
+        return
       }
       const account = await authApi.login(email, password)
       if (account.role !== 'contributor') {
@@ -127,10 +154,32 @@ function AuthPage({ initialSignup, onAuthenticated }: { initialSignup: boolean; 
     }
   }
 
+  async function verifySignup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      const result = await authApi.verifySignup(signupChallenge!.id, verificationCode)
+      const account = await authApi.login(signupChallenge!.email, signupPassword)
+      onAuthenticated(account ?? result.user)
+      navigate('/', { replace: true })
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to verify your email')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <main className="auth-page">
       <div className="auth-brand"><Logo /><p>Securely share project data and follow it through review.</p></div>
-      <form className="card upload-card auth-card" onSubmit={submit}>
+      {signupChallenge ? <form className="card upload-card auth-card" onSubmit={verifySignup}>
+        <div className="upload-section-heading"><div className="upload-icon"><CheckCircle2 size={20} /></div><div><h1>Verify your email</h1><p>Check your inbox for the six-digit code sent to {signupChallenge.email}.</p></div></div>
+        <label className="field-label">Verification code<input value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" placeholder="Enter 6-digit code" required /><span>Codes expire after 10 minutes.</span></label>
+        {error && <p className="form-message error-message" role="alert">{error}</p>}
+        <button className="primary-button upload-submit" type="submit" disabled={busy || verificationCode.length !== 6}>{busy && <LoaderCircle className="spinning" size={17} />}Verify email</button>
+        <p className="auth-switch">Did not receive it? <button type="button" onClick={async () => { try { await authApi.resendSignup(signupChallenge.id); setError('A new verification code was sent.') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to resend the code') } }}>Resend code</button></p>
+      </form> : <form className="card upload-card auth-card" onSubmit={submit}>
         <div className="upload-section-heading"><div className="upload-icon"><UserRound size={20} /></div><div><h1>{signup ? 'Create your account' : 'Welcome back'}</h1><p>{signup ? 'Create a client portal account to get started.' : 'Sign in to your client portal.'}</p></div></div>
         {signup && <label className="field-label">Full name<input name="displayName" autoComplete="name" required maxLength={120} /></label>}
         <label className="field-label">Email<input name="email" type="email" autoComplete="email" required /></label>
@@ -140,7 +189,7 @@ function AuthPage({ initialSignup, onAuthenticated }: { initialSignup: boolean; 
         {error && <p className="form-message error-message" role="alert">{error}</p>}
         <button className="primary-button upload-submit" type="submit" disabled={busy}>{busy && <LoaderCircle className="spinning" size={17} />}{signup ? 'Create account' : 'Sign in'}</button>
         <p className="auth-switch">{signup ? 'Already registered?' : 'New to DataBridge?'} <button type="button" onClick={() => { setSignup((value) => !value); setError(''); navigate(signup ? '/login' : '/signup') }}>{signup ? 'Sign in' : 'Create an account'}</button></p>
-      </form>
+      </form>}
       <Link className="portal-back-link" to="/"><ChevronLeft size={14} aria-hidden="true" />Back to workspace selection</Link>
     </main>
   )

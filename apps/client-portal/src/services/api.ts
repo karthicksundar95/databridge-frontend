@@ -10,6 +10,7 @@ export interface ApiUser {
   countryCode?: string | null
   phone?: string | null
   avatarUrl?: string | null
+  mustChangePassword?: boolean
 }
 
 export interface Submission {
@@ -58,7 +59,19 @@ export const authApi = {
     organization?: string
     countryCode?: string
   }) {
-    return request<{ user: ApiUser }>(authBaseUrl, '/auth/register', { method: 'POST', body: JSON.stringify(data) })
+    return request<{ challengeId: string; email: string; expiresIn: number }>(authBaseUrl, '/auth/register', { method: 'POST', body: JSON.stringify(data) })
+  },
+  verifySignup(challengeId: string, code: string) {
+    return request<{ user: ApiUser }>(authBaseUrl, '/auth/register/verify', {
+      method: 'POST',
+      body: JSON.stringify({ challengeId, code }),
+    })
+  },
+  resendSignup(challengeId: string) {
+    return request<{ expiresIn: number }>(authBaseUrl, '/auth/register/resend', {
+      method: 'POST',
+      body: JSON.stringify({ challengeId }),
+    })
   },
   async login(email: string, password: string) {
     const result = await request<{ token: string; user: ApiUser }>(authBaseUrl, '/auth/login', {
@@ -80,6 +93,12 @@ export const authApi = {
   },
   clearSession() {
     localStorage.removeItem('databridge_token')
+  },
+  changePassword(currentPassword: string, newPassword: string) {
+    return request<{ status: string }>(authBaseUrl, '/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    })
   },
 }
 
