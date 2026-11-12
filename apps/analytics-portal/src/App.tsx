@@ -5,6 +5,7 @@ import {
   UploadCloud, X, KeyRound,
 } from 'lucide-react'
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { QRCodeSVG } from 'qrcode.react'
 import { analyticsApi, type AdminUser, type AnalyticsSubmission, type AnalyticsUser, type SubmissionFile } from './services/analyticsApi'
 import './App.css'
 
@@ -14,6 +15,7 @@ const navigation = [
   { label: 'My assignments', to: '/analytics/assignments', icon: Users },
   { label: 'Completed analysis', to: '/analytics/completed', icon: FileCheck2 },
 ]
+const accessChangedMessage = 'Your account access has changed. Please sign in again through the portal for your new role.'
 
 function Logo() {
   return <div className="brand-mark"><span className="brand-symbol"><i /><i /><i /></span><span>DataBridge</span></div>
@@ -36,9 +38,15 @@ function AuthGate() {
     }
     analyticsApi.me().then((account) => {
       if (active && ['analyst', 'administrator'].includes(account.role)) setUser(account)
-      else if (active) analyticsApi.clearSession()
-    }).catch(() => {
-      if (active) analyticsApi.clearSession()
+      else if (active) {
+        analyticsApi.clearSession()
+        window.location.replace(clientPortalLoginUrl())
+      }
+    }).catch((reason) => {
+      if (active) {
+        analyticsApi.clearSession()
+        window.location.replace(reason instanceof Error && reason.message === accessChangedMessage ? clientPortalLoginUrl() : clientPortalUrl())
+      }
     }).finally(() => {
       if (active) setChecking(false)
     })
@@ -86,6 +94,7 @@ function PortalSelection() {
 function LoginPage({ onAuthenticated }: { onAuthenticated: (user: AnalyticsUser) => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [mfaStep, setMfaStep] = useState<{ type: 'setup'; token: string } | { type: 'challenge'; token: string } | null>(null)
   const navigate = useNavigate()
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -93,15 +102,24 @@ function LoginPage({ onAuthenticated }: { onAuthenticated: (user: AnalyticsUser)
     setError('')
     const data = new FormData(event.currentTarget)
     try {
-      const user = await analyticsApi.login(String(data.get('email') ?? '').trim(), String(data.get('password') ?? ''))
-      onAuthenticated(user)
-      navigate('/analytics', { replace: true })
+      const result = await analyticsApi.login(String(data.get('email') ?? '').trim(), String(data.get('password') ?? ''))
+      if (!['analyst', 'administrator'].includes(result.user.role)) {
+        throw new Error('This account does not have analytics workspace access.')
+      }
+      if (result.mfaSetupRequired && result.setupToken) setMfaStep({ type: 'setup', token: result.setupToken })
+      else if (result.mfaRequired && result.mfaToken) setMfaStep({ type: 'challenge', token: result.mfaToken })
+      else throw new Error('The server returned an incomplete authentication response.')
     } catch (reason) {
+      if (reason instanceof Error && reason.message === 'This account does not have analytics workspace access.') {
+        window.location.replace(clientPortalLoginUrl())
+        return
+      }
       setError(reason instanceof Error ? reason.message : 'Unable to sign in')
     } finally {
       setBusy(false)
     }
   }
+  if (mfaStep) return <main className="auth-page"><div className="auth-brand"><Logo /><p>Secure your analytics workspace.</p></div><MfaAuth step={mfaStep} onAuthenticated={(user) => { onAuthenticated(user); navigate('/analytics', { replace: true }) }} /></main>
   return <main className="auth-page">
     <div className="auth-brand"><Logo /><p>Review incoming client submissions and coordinate analysis.</p></div>
     <form className="card upload-card auth-card" onSubmit={submit}>
@@ -232,7 +250,21 @@ function AdminUsers({ currentUserId }: { currentUserId: string }) {
     } finally {
       setBusyId('')
     }
+  }
 
+  async function resetMfa(target: AdminUser) {
+      if (!window.confirm(`Reset Google Authenticator MFA for ${target.email}? They will set it up again at their next sign in.`)) return
+      setActionError('')
+      setBusyId(target.id)
+      try {
+        await analyticsApi.resetMfa(target.id)
+        setActionMenuId(null)
+        setRefresh((value) => value + 1)
+      } catch (reason) {
+        setActionError(reason instanceof Error ? reason.message : 'Unable to reset MFA')
+      } finally {
+        setBusyId('')
+      }
   }
 
   async function copyCredential() {
@@ -272,7 +304,7 @@ function AdminUsers({ currentUserId }: { currentUserId: string }) {
       <div className="admin-directory-header"><div><span className="admin-card-kicker">DIRECTORY</span><h2>All users <span>{filteredUsers.length}</span></h2></div><label className="admin-search"><span>Search users</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Name, email, organization" /></label></div>
       <div className="admin-filter-tabs" role="tablist">{filters.map((item) => <button key={item.id} className={filter === item.id ? 'is-active' : ''} type="button" onClick={() => setFilter(item.id)}>{item.label}<span>{users.filter((target) => item.id === 'all' || target.status === item.id || target.role === item.id).length}</span></button>)}</div>
       {loading ? <LoadingPage label="Loading users" /> : <div className="data-table-wrap"><table className="data-table"><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>
-        {filteredUsers.map((target) => <tr key={target.id}><td><strong>{target.displayName || target.email}</strong><small>{target.email}{target.organization ? ` · ${target.organization}` : ''}</small></td><td><select value={target.role} disabled={target.id === currentUserId || target.status === 'deleted' || busyId === target.id} onChange={(event) => void analyticsApi.updateUserRole(target.id, event.target.value as AdminUser['role']).then(() => setRefresh((value) => value + 1)).catch((reason) => setActionError(reason instanceof Error ? reason.message : 'Unable to update role'))}><option value="contributor">Contributor</option><option value="analyst">Analyst</option><option value="administrator">Administrator</option></select></td><td><span className={`admin-status ${target.status}`}>{target.status === 'suspended' ? 'Deactivated' : target.status}</span></td><td>{formatDate(target.createdAt)}</td><td><div className="admin-row-actions">{target.id !== currentUserId && target.status !== 'deleted' ? <><button className="icon-button admin-more-button" type="button" aria-label={`Manage ${target.email}`} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const menuHeight = 178; const menuWidth = 224; setActionMenuPosition({ top: rect.bottom + menuHeight > window.innerHeight ? rect.top - menuHeight - 8 : rect.bottom + 8, left: Math.max(12, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 12)) }); setActionMenuId(actionMenuId === target.id ? null : target.id) }}><MoreHorizontal size={18} /></button>{actionMenuId === target.id && <div className="admin-action-menu" style={{ top: actionMenuPosition.top, left: actionMenuPosition.left }}><div className="admin-action-menu-title">Account actions</div><div className="admin-action-menu-group"><button type="button" onClick={() => void resetPassword(target)}><KeyRound size={15} />Reset password</button>{target.status === 'suspended' ? <button type="button" onClick={() => void changeStatus(target, 'active')}><UserRoundCheck size={15} />Reactivate account</button> : <button type="button" onClick={() => void changeStatus(target, 'suspended')}><UserRoundX size={15} />Deactivate account</button>}</div><div className="admin-action-menu-group admin-action-menu-danger"><button type="button" onClick={() => void deleteUser(target)}><Trash2 size={15} />Delete account</button></div></div>}</> : <span className="admin-current-user">Current account</span>}</div></td></tr>)}
+        {filteredUsers.map((target) => <tr key={target.id}><td><strong>{target.displayName || target.email}</strong><small>{target.email}{target.organization ? ` · ${target.organization}` : ''}</small></td><td><select value={target.role} disabled={target.id === currentUserId || target.status === 'deleted' || busyId === target.id} onChange={(event) => void analyticsApi.updateUserRole(target.id, event.target.value as AdminUser['role']).then(() => setRefresh((value) => value + 1)).catch((reason) => setActionError(reason instanceof Error ? reason.message : 'Unable to update role'))}><option value="contributor">Contributor</option><option value="analyst">Analyst</option><option value="administrator">Administrator</option></select></td><td><span className={`admin-status ${target.status}`}>{target.status === 'suspended' ? 'Deactivated' : target.status}</span></td><td>{formatDate(target.createdAt)}</td><td><div className="admin-row-actions">{target.id !== currentUserId && target.status !== 'deleted' ? <><button className="icon-button admin-more-button" type="button" aria-label={`Manage ${target.email}`} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const menuHeight = 178; const menuWidth = 224; setActionMenuPosition({ top: rect.bottom + menuHeight > window.innerHeight ? rect.top - menuHeight - 8 : rect.bottom + 8, left: Math.max(12, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 12)) }); setActionMenuId(actionMenuId === target.id ? null : target.id) }}><MoreHorizontal size={18} /></button>{actionMenuId === target.id && <div className="admin-action-menu" style={{ top: actionMenuPosition.top, left: actionMenuPosition.left }}><div className="admin-action-menu-title">Account actions</div><div className="admin-action-menu-group"><button type="button" onClick={() => void resetPassword(target)}><KeyRound size={15} />Reset password</button><button type="button" onClick={() => void resetMfa(target)}><KeyRound size={15} />Reset MFA</button>{target.status === 'suspended' ? <button type="button" onClick={() => void changeStatus(target, 'active')}><UserRoundCheck size={15} />Reactivate account</button> : <button type="button" onClick={() => void changeStatus(target, 'suspended')}><UserRoundX size={15} />Deactivate account</button>}</div><div className="admin-action-menu-group admin-action-menu-danger"><button type="button" onClick={() => void deleteUser(target)}><Trash2 size={15} />Delete account</button></div></div>}</> : <span className="admin-current-user">Current account</span>}</div></td></tr>)}
         {!filteredUsers.length && <tr><td className="admin-empty-row" colSpan={5}>No users match this search or filter.</td></tr>}
       </tbody></table></div>}
     </section>
@@ -299,6 +331,31 @@ function PasswordChange() {
     }
   }
   return <main className="auth-page"><div className="auth-brand"><Logo /><p>Set a private password before continuing to DataBridge.</p></div><form className="card upload-card auth-card" onSubmit={(event) => void submit(event)}><div className="upload-section-heading"><div className="upload-icon"><Users size={20} /></div><div><h1>Choose a new password</h1><p>Your administrator issued a temporary password for this account.</p></div></div><label className="field-label">Temporary password<input name="currentPassword" type="password" required /></label><label className="field-label">New password<input name="newPassword" type="password" minLength={12} required /><span>Use at least 12 characters.</span></label>{error && <ErrorBanner message={error} />}<button className="primary-button upload-submit purple" type="submit" disabled={busy}>{busy && <LoaderCircle className="spinning" size={17} />}Save new password</button></form></main>
+}
+
+function MfaAuth({ step, onAuthenticated }: { step: { type: 'setup'; token: string } | { type: 'challenge'; token: string }; onAuthenticated: (user: AnalyticsUser) => void }) {
+  const [uri, setUri] = useState('')
+  const [code, setCode] = useState('')
+  const [recoveryCode, setRecoveryCode] = useState('')
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null)
+  const [completedUser, setCompletedUser] = useState<AnalyticsUser | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => { if (step.type === 'setup') analyticsApi.mfaSetup(step.token).then((result) => setUri(result.otpauthUri)).catch((reason) => setError(reason instanceof Error ? reason.message : 'Unable to load MFA setup')) }, [step])
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError('')
+    try {
+      if (step.type === 'setup') {
+        const result = await analyticsApi.verifyMfaSetup(step.token, code)
+        setRecoveryCodes(result.recoveryCodes); setCompletedUser(result.user)
+      } else {
+        const result = await analyticsApi.verifyMfa(step.token, code || undefined, recoveryCode || undefined)
+        onAuthenticated(result.user)
+      }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to verify MFA') } finally { setBusy(false) }
+  }
+  if (recoveryCodes) return <div className="card upload-card auth-card"><div className="upload-section-heading"><div className="upload-icon"><Check size={20} /></div><div><h1>Save your recovery codes</h1><p>These codes are shown once. Store them somewhere safe before continuing.</p></div></div><div className="recovery-codes">{recoveryCodes.map((item) => <code key={item}>{item}</code>)}</div><button className="primary-button upload-submit purple" type="button" onClick={() => completedUser && onAuthenticated(completedUser)}>Continue</button></div>
+  return <form className="card upload-card auth-card" onSubmit={submit}><div className="upload-section-heading"><div className="upload-icon"><KeyRound size={20} /></div><div><h1>{step.type === 'setup' ? 'Set up two-factor authentication' : 'Verify your identity'}</h1><p>{step.type === 'setup' ? 'Scan this QR code in Google Authenticator, then enter the six-digit code.' : 'Enter the code from Google Authenticator or use a recovery code.'}</p></div></div>{step.type === 'setup' && (uri ? <><QRCodeSVG value={uri} size={180} /><label className="field-label">Manual setup URI<input value={uri} readOnly /></label></> : <p>Loading setup code…</p>)}<label className="field-label">Authenticator code<input value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" placeholder="6-digit code" required={!recoveryCode} /></label>{step.type === 'challenge' && <label className="field-label">Recovery code <span>(optional)</span><input value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value.trim())} required={!code} /></label>}{error && <ErrorBanner message={error} />}<button className="primary-button upload-submit purple" type="submit" disabled={busy || (!code && !recoveryCode)}>{busy && <LoaderCircle className="spinning" size={17} />}{step.type === 'setup' ? 'Enable MFA' : 'Verify and sign in'}</button></form>
 }
 
 function useRemoteData<T>(load: () => Promise<T>, reloadKey = 0) {
@@ -485,6 +542,10 @@ function clientPortalUrl() {
   if (configuredUrl) return configuredUrl
 
   return `${window.location.origin}/`
+}
+
+function clientPortalLoginUrl() {
+  return new URL('login?notice=access-changed', clientPortalUrl()).toString()
 }
 
 export default function App() {

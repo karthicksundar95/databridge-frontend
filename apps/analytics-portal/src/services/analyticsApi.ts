@@ -9,6 +9,13 @@ export interface AnalyticsUser {
   organization?: string | null
   mustChangePassword?: boolean
 }
+export interface LoginResult {
+  user: AnalyticsUser
+  mfaSetupRequired?: boolean
+  setupToken?: string
+  mfaRequired?: boolean
+  mfaToken?: string
+}
 
 export interface AnalyticsSubmission {
   id: string
@@ -68,22 +75,24 @@ async function request<T>(baseUrl: string, path: string, options: RequestInit = 
 }
 
 export const analyticsApi = {
-  async login(email: string, password: string) {
-    const result = await request<{ token: string; user: AnalyticsUser }>(authBaseUrl, '/auth/login', {
+  login(email: string, password: string) {
+    return request<LoginResult>(authBaseUrl, '/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     })
-    if (!['analyst', 'administrator'].includes(result.user.role)) {
-      localStorage.setItem('databridge_token', result.token)
-      try {
-        await request<void>(authBaseUrl, '/auth/logout', { method: 'POST' })
-      } finally {
-        localStorage.removeItem('databridge_token')
-      }
-      throw new Error('This account does not have analytics workspace access.')
-    }
-    localStorage.setItem('databridge_token', result.token)
-    return result.user
+  },
+  mfaSetup(setupToken: string) {
+    return request<{ otpauthUri: string }>(authBaseUrl, `/auth/mfa/setup?${new URLSearchParams({ setup_token: setupToken })}`)
+  },
+  verifyMfaSetup(setupToken: string, code: string) {
+    return request<{ token: string; user: AnalyticsUser; recoveryCodes: string[] }>(authBaseUrl, '/auth/mfa/setup/verify', {
+      method: 'POST', body: JSON.stringify({ setupToken, code }),
+    }).then((result) => { localStorage.setItem('databridge_token', result.token); return result })
+  },
+  verifyMfa(mfaToken: string, code?: string, recoveryCode?: string) {
+    return request<{ token: string; user: AnalyticsUser }>(authBaseUrl, '/auth/mfa/verify', {
+      method: 'POST', body: JSON.stringify({ mfaToken, code, recoveryCode }),
+    }).then((result) => { localStorage.setItem('databridge_token', result.token); return result })
   },
   me() {
     return request<AnalyticsUser>(authBaseUrl, '/me')
@@ -159,6 +168,9 @@ export const analyticsApi = {
     return request<{ id: string; email: string; temporaryPassword: string; mustChangePassword: boolean }>(authBaseUrl, `/admin/users/${userId}/reset-password`, {
       method: 'POST',
     })
+  },
+  resetMfa(userId: string) {
+    return request<{ id: string }>(authBaseUrl, `/admin/users/${userId}/reset-mfa`, { method: 'POST' })
   },
   changePassword(currentPassword: string, newPassword: string) {
     return request<{ status: string }>(authBaseUrl, '/auth/password', {

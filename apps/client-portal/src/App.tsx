@@ -5,6 +5,7 @@ import {
   UploadCloud, UserRound, X,
 } from 'lucide-react'
 import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { QRCodeSVG } from 'qrcode.react'
 import { authApi, reportsApi, storageApi, submissionsApi, type ApiUser, type Report, type Submission, type SubmissionFile } from './services/api'
 import './App.css'
 
@@ -114,10 +115,14 @@ function PortalSelection() {
 function AuthPage({ initialSignup, onAuthenticated }: { initialSignup: boolean; onAuthenticated: (user: ApiUser) => void }) {
   const [signup, setSignup] = useState(initialSignup)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
+  const location = useLocation()
+  const [error, setError] = useState(() => location.search.includes('notice=access-changed')
+    ? 'Your account access has changed. Please sign in here to continue to the client portal.'
+    : '')
   const [signupChallenge, setSignupChallenge] = useState<{ id: string; email: string } | null>(null)
   const [signupPassword, setSignupPassword] = useState('')
   const [verificationCode, setVerificationCode] = useState('')
+  const [mfaStep, setMfaStep] = useState<{ type: 'setup'; token: string } | { type: 'challenge'; token: string } | null>(null)
   const navigate = useNavigate()
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -140,13 +145,13 @@ function AuthPage({ initialSignup, onAuthenticated }: { initialSignup: boolean; 
         setSignupChallenge({ id: challenge.challengeId, email: challenge.email })
         return
       }
-      const account = await authApi.login(email, password)
-      if (account.role !== 'contributor') {
-        await authApi.logout()
+      const result = await authApi.login(email, password)
+      if (result.user.role !== 'contributor') {
         throw new Error('This account does not have client portal access.')
       }
-      onAuthenticated(account)
-      navigate('/', { replace: true })
+      if (result.mfaSetupRequired && result.setupToken) setMfaStep({ type: 'setup', token: result.setupToken })
+      else if (result.mfaRequired && result.mfaToken) setMfaStep({ type: 'challenge', token: result.mfaToken })
+      else throw new Error('The server returned an incomplete authentication response.')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to authenticate')
     } finally {
@@ -159,10 +164,11 @@ function AuthPage({ initialSignup, onAuthenticated }: { initialSignup: boolean; 
     setBusy(true)
     setError('')
     try {
-      const result = await authApi.verifySignup(signupChallenge!.id, verificationCode)
-      const account = await authApi.login(signupChallenge!.email, signupPassword)
-      onAuthenticated(account ?? result.user)
-      navigate('/', { replace: true })
+      await authApi.verifySignup(signupChallenge!.id, verificationCode)
+      const loginResult = await authApi.login(signupChallenge!.email, signupPassword)
+      if (loginResult.mfaSetupRequired && loginResult.setupToken) setMfaStep({ type: 'setup', token: loginResult.setupToken })
+      else if (loginResult.mfaRequired && loginResult.mfaToken) setMfaStep({ type: 'challenge', token: loginResult.mfaToken })
+      else throw new Error('The server returned an incomplete authentication response.')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to verify your email')
     } finally {
@@ -173,7 +179,7 @@ function AuthPage({ initialSignup, onAuthenticated }: { initialSignup: boolean; 
   return (
     <main className="auth-page">
       <div className="auth-brand"><Logo /><p>Securely share project data and follow it through review.</p></div>
-      {signupChallenge ? <form className="card upload-card auth-card" onSubmit={verifySignup}>
+      {mfaStep ? <MfaAuth step={mfaStep} onAuthenticated={(account) => { onAuthenticated(account); navigate('/', { replace: true }) }} /> : signupChallenge ? <form className="card upload-card auth-card" onSubmit={verifySignup}>
         <div className="upload-section-heading"><div className="upload-icon"><CheckCircle2 size={20} /></div><div><h1>Verify your email</h1><p>Check your inbox for the six-digit code sent to {signupChallenge.email}.</p></div></div>
         <label className="field-label">Verification code<input value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" placeholder="Enter 6-digit code" required /><span>Codes expire after 10 minutes.</span></label>
         {error && <p className="form-message error-message" role="alert">{error}</p>}
@@ -193,6 +199,34 @@ function AuthPage({ initialSignup, onAuthenticated }: { initialSignup: boolean; 
       <Link className="portal-back-link" to="/"><ChevronLeft size={14} aria-hidden="true" />Back to workspace selection</Link>
     </main>
   )
+}
+
+function MfaAuth({ step, onAuthenticated }: { step: { type: 'setup'; token: string } | { type: 'challenge'; token: string }; onAuthenticated: (user: ApiUser) => void }) {
+  const [uri, setUri] = useState('')
+  const [code, setCode] = useState('')
+  const [recoveryCode, setRecoveryCode] = useState('')
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null)
+  const [completedUser, setCompletedUser] = useState<ApiUser | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    if (step.type === 'setup') authApi.mfaSetup(step.token).then((result) => setUri(result.otpauthUri)).catch((reason) => setError(reason instanceof Error ? reason.message : 'Unable to load MFA setup'))
+  }, [step])
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError('')
+    try {
+      if (step.type === 'setup') {
+        const result = await authApi.verifyMfaSetup(step.token, code)
+        setRecoveryCodes(result.recoveryCodes)
+        setCompletedUser(result.user)
+      } else {
+        const result = await authApi.verifyMfa(step.token, code || undefined, recoveryCode || undefined)
+        onAuthenticated(result.user)
+      }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to verify MFA') } finally { setBusy(false) }
+  }
+  if (recoveryCodes) return <div className="card upload-card auth-card"><div className="upload-section-heading"><div className="upload-icon"><CheckCircle2 size={20} /></div><div><h1>Save your recovery codes</h1><p>These codes are shown once. Store them somewhere safe before continuing.</p></div></div><div className="recovery-codes">{recoveryCodes.map((item) => <code key={item}>{item}</code>)}</div><button className="primary-button upload-submit" type="button" onClick={() => completedUser && onAuthenticated(completedUser)}>Continue</button></div>
+  return <form className="card upload-card auth-card" onSubmit={submit}><div className="upload-section-heading"><div className="upload-icon"><UserRound size={20} /></div><div><h1>{step.type === 'setup' ? 'Set up two-factor authentication' : 'Verify your identity'}</h1><p>{step.type === 'setup' ? 'Scan this QR code in Google Authenticator, then enter the six-digit code.' : 'Enter the code from Google Authenticator or use a recovery code.'}</p></div></div>{step.type === 'setup' && (uri ? <><QRCodeSVG value={uri} size={180} /><label className="field-label">Manual setup key<input value={uri} readOnly /></label></> : <p>Loading setup code…</p>)}<label className="field-label">Authenticator code<input value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" placeholder="6-digit code" required={!recoveryCode} /></label>{step.type === 'challenge' && <label className="field-label">Recovery code <span>(optional)</span><input value={recoveryCode} onChange={(event) => setRecoveryCode(event.target.value.trim())} autoComplete="off" required={!code} /></label>}{error && <p className="form-message error-message" role="alert">{error}</p>}<button className="primary-button upload-submit" type="submit" disabled={busy || (!code && !recoveryCode)}>{busy && <LoaderCircle className="spinning" size={17} />}{step.type === 'setup' ? 'Enable MFA' : 'Verify and sign in'}</button></form>
 }
 
 function Shell({ user, onSignedOut }: { user: ApiUser; onSignedOut: () => void }) {

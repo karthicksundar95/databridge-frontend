@@ -12,6 +12,13 @@ export interface ApiUser {
   avatarUrl?: string | null
   mustChangePassword?: boolean
 }
+export interface LoginResult {
+  user: ApiUser
+  mfaSetupRequired?: boolean
+  setupToken?: string
+  mfaRequired?: boolean
+  mfaToken?: string
+}
 
 export interface Submission {
   id: string
@@ -73,13 +80,24 @@ export const authApi = {
       body: JSON.stringify({ challengeId }),
     })
   },
-  async login(email: string, password: string) {
-    const result = await request<{ token: string; user: ApiUser }>(authBaseUrl, '/auth/login', {
+  login(email: string, password: string) {
+    return request<LoginResult>(authBaseUrl, '/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     })
-    localStorage.setItem('databridge_token', result.token)
-    return result.user
+  },
+  mfaSetup(setupToken: string) {
+    return request<{ otpauthUri: string }>(authBaseUrl, `/auth/mfa/setup?${new URLSearchParams({ setup_token: setupToken })}`)
+  },
+  verifyMfaSetup(setupToken: string, code: string) {
+    return request<{ token: string; user: ApiUser; recoveryCodes: string[] }>(authBaseUrl, '/auth/mfa/setup/verify', {
+      method: 'POST', body: JSON.stringify({ setupToken, code }),
+    }).then((result) => { localStorage.setItem('databridge_token', result.token); return result })
+  },
+  verifyMfa(mfaToken: string, code?: string, recoveryCode?: string) {
+    return request<{ token: string; user: ApiUser }>(authBaseUrl, '/auth/mfa/verify', {
+      method: 'POST', body: JSON.stringify({ mfaToken, code, recoveryCode }),
+    }).then((result) => { localStorage.setItem('databridge_token', result.token); return result })
   },
   me() {
     return request<ApiUser>(authBaseUrl, '/me')

@@ -178,6 +178,9 @@
   background-color: #7053d8;
   border-color: #7053d8;
 }
+.auth-card > svg { align-self: center; padding: 10px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; }
+.recovery-codes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 12px; background: #f8fafc; border-radius: 8px; }
+.recovery-codes code { padding: 8px; text-align: center; color: #334155; background: #fff; border: 1px solid #e2e8f0; border-radius: 5px; font-size: 13px; }
 .loading-state { min-height: 120px; display: flex; align-items: center; justify-content: center; gap: 10px; color: #64748b; font-size: 13px; }
 .status-badge.red { color: #b42332; background: #fff0f1; }
 .data-table-wrap { overflow-x: auto; }

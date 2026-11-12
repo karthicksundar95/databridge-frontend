@@ -208,6 +208,9 @@ button:disabled { cursor: wait; opacity: .7; }
   background-color: #3155b8;
   border-color: #3155b8;
 }
+.auth-card > svg { align-self: center; padding: 10px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; }
+.recovery-codes { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 12px; background: #f8fafc; border-radius: 8px; }
+.recovery-codes code { padding: 8px; text-align: center; color: #334155; background: #fff; border: 1px solid #e2e8f0; border-radius: 5px; font-size: 13px; }
 .loading-state { min-height: 120px; display: flex; align-items: center; justify-content: center; gap: 10px; color: #64748b; font-size: 13px; }
 .profile-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .profile-field { display: flex; flex-direction: column; gap: 6px; }
